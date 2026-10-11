@@ -32,6 +32,18 @@ CleanSweep follows a "official uninstall + fallback cleanup + full user control"
 | Anti-freeze design | 60-second hard timeout, 10-second heartbeat logs, "Force-kill uninstaller and continue" button, batched log flushing, cancellable scans (see below) |
 | Backup & restore | Auto `reg export` before deleting any registry key (double-click a `.reg` to restore); optional System Restore point; files go to the Recycle Bin by default |
 | Cleanup report | Markdown report listing every deleted file/folder (with file count, size) and every registry key plus backup location |
+| Personal file cleaner | Find photos, Word/PPT/Excel documents, PDFs, text files, audio/video and archives on this machine with one click (new in v1.1.0, see below) |
+
+## Personal file cleaner (new in v1.1.0)
+
+Click **"资料清理" (file cleaner)** in the main window to open a separate window:
+
+1. **Pick categories**: images (jpg/png/heic…), documents (doc/docx/ppt/pptx/xls/xlsx/wps…), PDF, text, audio/video, archives — any combination;
+2. **Pick scope**: default user folders (Desktop/Documents/Downloads/Pictures/Videos, redirect-aware), plus any custom folder; system & program directories are skipped by default (fast, low noise). Scanning is read-only and cancellable at any time;
+3. **Review item by item**: results show category/size/modification time/path, sortable, double-click to open the containing folder; **nothing is checked by default** — deletion requires explicit checks;
+4. **Delete**: Recycle Bin by default (restorable); permanent deletion asks for an extra confirmation; deletion runs in a worker thread and produces a Markdown report.
+
+> This feature deletes your own documents and photos — always verify paths before checking an item; when in doubt, keep the file.
 
 ## The freeze bug: root cause and fix (v1.0.0 highlight)
 
@@ -68,6 +80,7 @@ Investigation confirmed three stacked problems; #1 was the core deadlock chain:
 4. **Thorough uninstall**: confirmation dialog → (optional) restore point → official uninstaller (max 60 s wait, one-click force-kill) → leftover scan (cancellable) → review candidates item by item → choose "Recycle Bin" or "permanent delete" → report.
 5. **Scan leftovers only**: lists residue candidates without running any uninstaller (useful for dead entries).
 6. Reports live in `Documents\CleanSweepReports\<timestamp>_<app>\清理报告.md`; the `registry-backup\` folder next to it contains `.reg` backups of every deleted key (double-click to restore).
+7. **File cleaner (v1.1.0)**: main window → "资料清理" → pick categories & folders → scan → check files → delete (Recycle Bin by default); a separate report is generated.
 
 ## Safety mechanisms
 
@@ -87,6 +100,7 @@ Investigation confirmed three stacked problems; #1 was the core deadlock chain:
 - **Restore point limits**: Windows only creates one restore point per 24 h; consider creating one manually before batch uninstalls.
 - **Antivirus false positives**: unsigned PyInstaller exes are commonly flagged; run from source or sign the binary yourself.
 - **Scope**: UWP/Store apps are not listed; do not use it to clean system components or drivers (hidden system entries are filtered by default).
+- **The file cleaner targets your own documents and photos**: verify paths before checking items; only user folders are scanned by default and the Recycle Bin is the default mode, but permanent deletion is unrecoverable; reports are saved under `CleanSweepReports`.
 
 ## Run from source
 
@@ -125,6 +139,8 @@ CleanSweep/
 │   ├── uninstaller.py   # Official uninstaller runner: 60 s timeout + heartbeat + controlled force-kill
 │   ├── cleaner.py       # Deletion + hard-coded safety checks
 │   ├── backup.py        # Registry export + System Restore point
+│   ├── filefinder.py    # Personal file search by category (read-only, cancellable)
+│   ├── cleaner_window.py# File-cleaner window: confirm-then-delete + recycle bin + report
 │   ├── reporter.py      # Cleanup report
 │   └── gui.py           # tkinter UI: batched log flush / uninstall wizard / cancellable scans
 ├── docs/                # Release notes

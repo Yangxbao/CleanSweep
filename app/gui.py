@@ -166,6 +166,14 @@ class MainWindow(tk.Tk):
     def _smoke_done(self):
         risks = [a.risk_level for a in self.apps]
         print(f"[smoke] apps={len(self.apps)} risks={ {r: risks.count(r) for r in set(risks)} }")
+        try:
+            from .cleaner_window import FileCleanerWindow
+            w = FileCleanerWindow(self, show=False)
+            self.update_idletasks()
+            print(f"[smoke] file-cleaner window OK (folders={len(w.folder_vars)})")
+            w.destroy()
+        except Exception as e:  # noqa: BLE001
+            print(f"[smoke] file-cleaner window FAILED: {e}")
         self.destroy()
 
     # ------------------------------------------------------------- UI 构建
@@ -225,6 +233,9 @@ class MainWindow(tk.Tk):
         self.btn_uninstall.pack(side="left")
         self.btn_scan = ttk.Button(bottom, text="仅扫描残留（不卸载）", command=self.do_scan_only)
         self.btn_scan.pack(side="left", padx=6)
+        self.btn_files = ttk.Button(bottom, text="资料清理（图片/文档/PPT…）",
+                                    command=self.open_file_cleaner)
+        self.btn_files.pack(side="left", padx=6)
         ttk.Button(bottom, text="打开报告文件夹", command=self._open_reports).pack(side="left")
         self.status = ttk.Label(self, text="正在读取注册表…", padding=(8, 2), anchor="w")
         self.status.pack(fill="x")
@@ -418,6 +429,11 @@ class MainWindow(tk.Tk):
         self.busy = True
         self._set_buttons_busy(True)
         UninstallFlow(self, app, scan_only=True).start()
+
+    def open_file_cleaner(self):
+        """打开资料清理窗口（独立于卸载流程，可同时使用）。"""
+        from .cleaner_window import FileCleanerWindow  # 延迟导入避免循环依赖
+        FileCleanerWindow(self)
 
 
 # ================================================================ 对话框

@@ -9,7 +9,7 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app import backup, cleaner, leftovers, matcher, scanner, uninstaller, winutil  # noqa: E402
+from app import backup, cleaner, filefinder, leftovers, matcher, scanner, uninstaller, winutil  # noqa: E402
 
 failures = 0
 
@@ -135,6 +135,41 @@ if apps:
     print(f"    {target.name} 的卸载相关进程名候选：{sorted(names) or '（无）'}")
     expect(all(not winutil.is_protected_process(n) for n in names),
            "推导出的进程名候选不含受保护进程")
+
+print("== 8. 资料文件扫描（只读） ==")
+import shutil  # noqa: E402
+base = tempfile.mkdtemp(prefix="cs_files_")
+try:
+    os.makedirs(os.path.join(base, "normal"))
+    os.makedirs(os.path.join(base, "appdata"))
+    for rel, content in (("normal/photo.jpg", b"a"), ("normal/report.docx", b"bb"),
+                         ("normal/deck.pptx", b"ccc"), ("appdata/cache.png", b"d")):
+        with open(os.path.join(base, rel), "wb") as f:
+            f.write(content)
+    cats = {"image", "document"}
+    s = filefinder.scan([base], cats, include_system_dirs=False)
+    expect(s["found"] == 3, f"默认跳过 appdata：找到 3 个（实际 {s['found']}）")
+    s2 = filefinder.scan([base], cats, include_system_dirs=True)
+    expect(s2["found"] == 4, f"包含系统目录：找到 4 个（实际 {s2['found']}）")
+    s3 = filefinder.scan([base], cats, max_results=1)
+    expect(s3["truncated"] and s3["found"] == 1, "max_results 截断生效")
+    kinds = set()
+    filefinder.scan([base], cats, sink=lambda batch: kinds.update(f.category for f in batch))
+    expect(kinds == {"image", "document"}, f"类别标记正确（实际 {kinds}）")
+finally:
+    shutil.rmtree(base, ignore_errors=True)
+
+uf = filefinder.user_folders()
+expect(len(uf) >= 1, f"读取到 {len(uf)} 个用户常用目录：{[lbl for _p, lbl in uf]}")
+try:
+    roots = [p for p, _l in uf]
+    s_real = filefinder.scan(roots, {"image", "document", "pdf"},
+                             include_system_dirs=False, max_results=100)
+    print(f"    真实环境小样本（上限 100）：找到 {s_real['found']} 个，"
+          f"检查了 {s_real['scanned_dirs']} 个目录"
+          f"{'（已截断）' if s_real['truncated'] else ''}")
+except Exception as e:  # noqa: BLE001
+    expect(False, f"真实环境扫描出错：{e}")
 
 print()
 if failures:
