@@ -183,8 +183,8 @@ class MainWindow(tk.Tk):
                                              "image", ".png")
                     w._insert_row(f)
                     w.tree.selection_set("f0")
-                    w._preview_seq += 1
-                    w._request_preview(w._preview_seq, f)
+                    w._preview_file = f
+                    w._refresh_preview()  # 立即刷新，绕过防抖
                     deadline = _time.time() + 5
                     while _time.time() < deadline and w._preview_img is None:
                         try:

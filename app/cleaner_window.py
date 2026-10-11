@@ -7,9 +7,11 @@
 - 删除动作在工作线程执行，逐块回收站删除，失败逐个重试，全部记录到报告。
 
 交互设计：
+- 列表与预览面板之间是可拖动的分隔条；图片按面板实际大小生成并随缩放重新生成；
 - 单击选中行 -> 右侧立即显示图片预览（GDI+ 解码，零依赖）；
 - 双击行 -> 用系统默认程序打开该文件（看大图 / Office 文档）；
-- 点击列标题可按 类别 / 大小 / 修改时间 / 创建时间 / 路径 排序。
+- 点击列标题可按 类别 / 大小 / 修改时间 / 创建时间 / 路径 排序；
+- 顶部「返回卸载主界面」按钮（或关闭窗口）即可回到主窗口。
 """
 from __future__ import annotations
 
@@ -25,7 +27,8 @@ from .gui import FONT, FONT_BOLD, _raise_window
 
 MAX_RESULTS = 10000   # 扫描结果上限（与列表显示上限一致）
 DELETE_CHUNK = 200    # 回收站批量删除的块大小
-PREVIEW_W, PREVIEW_H = 360, 280
+PREVIEW_W, PREVIEW_H = 360, 280   # 面板尺寸未知时的兜底值
+PREVIEW_PANE_W = 430  # 预览面板初始宽度（可拖动分隔条调整）
 
 
 def _chunks(seq, size):
@@ -55,21 +58,32 @@ class FileCleanerWindow(tk.Toplevel):
         self._preview_img = None              # 持有引用防止被 GC
         self._preview_file = None
         self._debounce_job = None
+        self._resize_job = None
+        self._pv_size = (0, 0)                # 上次生成预览时的面板尺寸
 
         self._build_ui()
         self._load_default_folders()
         self._update_counts()
         if show:
             _raise_window(self)
-        self.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.protocol("WM_DELETE_WINDOW", self._back_to_main)
         self.after(150, self._pump)
 
     # ------------------------------------------------------------- UI 构建
 
     def _build_ui(self):
+        # 0) 顶部：返回主界面
+        hdr = ttk.Frame(self, padding=(8, 6, 8, 0))
+        hdr.pack(fill="x")
+        ttk.Button(hdr, text="← 返回卸载主界面",
+                   command=self._back_to_main).pack(side="left")
+        ttk.Label(hdr, foreground="#888888",
+                  text="资料清理与卸载清理相互独立；关闭本窗口即可回到主界面")\
+            .pack(side="left", padx=10)
+
         # 1) 类别选择
         top = ttk.LabelFrame(self, text="1. 选择要查找的文件类别", padding=(8, 4))
-        top.pack(fill="x", padx=8, pady=(8, 4))
+        top.pack(fill="x", padx=8, pady=(6, 4))
         self.cat_vars: dict = {}
         for cat, text in filefinder.CATEGORY_TEXT.items():
             var = tk.BooleanVar(value=cat in filefinder.DEFAULT_CATEGORIES)
@@ -103,12 +117,20 @@ class FileCleanerWindow(tk.Toplevel):
                                 anchor="w")
         self.status.pack(side="left", padx=(0, 8))
 
-        # 4) 结果区（左：列表，右：预览）
+        # 操作提示（独立一行，避免与列表布局互相干扰）
+        ttk.Label(self, foreground="#888888", padding=(10, 0),
+                  text="单击选中行可在右侧预览图片；双击用系统程序打开；点击列标题排序"
+                       "（再次点击切换升/降序）；列表与预览之间的分隔条可左右拖动")\
+            .pack(fill="x")
+
+        # 4) 结果区：左列表 + 右预览，中间可拖动分隔条
         main = ttk.Frame(self, padding=(8, 2))
         main.pack(fill="both", expand=True)
+        paned = ttk.Panedwindow(main, orient="horizontal")
+        paned.pack(fill="both", expand=True)
 
-        treef = ttk.Frame(main)
-        treef.pack(side="left", fill="both", expand=True)
+        treef = ttk.Frame(paned)
+        paned.add(treef, weight=1)
         cols = ("sel", "kind", "size", "mtime", "ctime", "path")
         self.tree = ttk.Treeview(treef, columns=cols, show="headings")
         for col, text, w, a in (("sel", "删除", 46, "center"),
@@ -128,22 +150,20 @@ class FileCleanerWindow(tk.Toplevel):
         self.tree.bind("<Double-1>", self._on_double)
         self.tree.bind("<space>", self._on_space)
         self.tree.bind("<<TreeviewSelect>>", self._on_select_row)
-        ttk.Label(treef, foreground="#888888",
-                  text="单击选中行可在右侧预览图片；双击用系统程序打开；点击列标题排序"
-                       "（再次点击切换升/降序）").pack(anchor="w", pady=(3, 0))
 
-        preview = ttk.LabelFrame(main, text="预览", padding=6)
-        preview.pack(side="left", fill="y", padx=(8, 0))
-        preview.configure(width=PREVIEW_W + 28)
-        preview.pack_propagate(False)
+        preview = ttk.LabelFrame(paned, text="预览", padding=6)
+        paned.add(preview, weight=0)
+        preview.configure(width=PREVIEW_PANE_W)
+        preview.pack_propagate(False)   # 面板宽度固定（拖动分隔条调整），不随图片变化
         self.preview_label = tk.Label(
             preview, text="单击列表中的图片行\n在此预览", bg="#f2f2f2", fg="#777777",
             justify="center", anchor="center", relief="sunken", bd=1)
-        self.preview_label.pack(fill="x")
-        self.preview_name = tk.Label(preview, text="", wraplength=PREVIEW_W - 8,
+        self.preview_label.pack(fill="both", expand=True)
+        self.preview_label.bind("<Configure>", self._on_preview_resize)
+        self.preview_name = tk.Label(preview, text="", wraplength=PREVIEW_PANE_W - 30,
                                      justify="left", font=FONT_BOLD, anchor="w")
         self.preview_name.pack(fill="x", pady=(6, 0))
-        self.preview_info = tk.Label(preview, text="", wraplength=PREVIEW_W - 8,
+        self.preview_info = tk.Label(preview, text="", wraplength=PREVIEW_PANE_W - 30,
                                      justify="left", fg="#555555", anchor="w")
         self.preview_info.pack(fill="x")
         pbtns = ttk.Frame(preview)
@@ -190,6 +210,22 @@ class FileCleanerWindow(tk.Toplevel):
         self.folder_vars.append((path, var))
         ttk.Checkbutton(self.folder_frame, text=path, variable=var).pack(
             side="left", padx=(0, 10))
+
+    # ------------------------------------------------------------- 返回
+
+    def _back_to_main(self):
+        """关闭本窗口，回到卸载主界面。"""
+        self.cancel_event.set()  # 取消扫描/中止删除批次
+        master = self.master
+        try:
+            self.destroy()
+        except tk.TclError:
+            pass
+        try:
+            master.lift()
+            master.focus_force()
+        except (tk.TclError, AttributeError):
+            pass
 
     # ------------------------------------------------------------- 扫描
 
@@ -304,18 +340,16 @@ class FileCleanerWindow(tk.Toplevel):
         sel = self.tree.selection()
         f = self.iid2file.get(sel[0]) if sel else None
         self._preview_file = f
-        self._preview_seq += 1
-        seq = self._preview_seq
         if self._debounce_job:
             try:
                 self.after_cancel(self._debounce_job)
             except tk.TclError:
                 pass
-        self._debounce_job = self.after(120, lambda: self._request_preview(seq, f))
+        self._debounce_job = self.after(120, self._refresh_preview)
 
-    def _request_preview(self, seq, f):
-        if seq != self._preview_seq:
-            return
+    def _refresh_preview(self):
+        """按当前选中文件与当前面板尺寸刷新预览。"""
+        f = self._preview_file
         if f is None:
             self._set_preview_text("单击列表中的图片行\n在此预览")
             self.preview_name.config(text="")
@@ -332,12 +366,19 @@ class FileCleanerWindow(tk.Toplevel):
             self._set_preview_text("预览功能不可用")
             return
         self._set_preview_text("正在生成预览…")
-        threading.Thread(target=self._preview_worker, args=(seq, f.path),
+        # 按面板实际大小生成（未完成布局时用兜底值）
+        pw, ph = self.preview_label.winfo_width(), self.preview_label.winfo_height()
+        max_w = max(120, min(pw - 10 if pw > 60 else PREVIEW_W, 900))
+        max_h = max(120, min(ph - 10 if ph > 60 else PREVIEW_H, 700))
+        self._pv_size = (max_w, max_h)
+        seq = self._preview_seq + 1
+        self._preview_seq = seq
+        threading.Thread(target=self._preview_worker, args=(seq, f.path, max_w, max_h),
                          daemon=True).start()
 
-    def _preview_worker(self, seq, path):
+    def _preview_worker(self, seq, path, max_w, max_h):
         try:
-            data = imgprev.decode_thumbnail(path, PREVIEW_W, PREVIEW_H)
+            data = imgprev.decode_thumbnail(path, max_w, max_h)
         except Exception:  # noqa: BLE001
             data = None
         try:
@@ -347,7 +388,7 @@ class FileCleanerWindow(tk.Toplevel):
 
     def _apply_preview(self, seq, path, data):
         if seq != self._preview_seq:
-            return  # 已有更新的选择
+            return  # 已有更新的预览请求
         if not self._preview_file or self._preview_file.path != path:
             return  # 当前选中的已不是这张图
         if not data:
@@ -364,6 +405,24 @@ class FileCleanerWindow(tk.Toplevel):
     def _set_preview_text(self, text):
         self._preview_img = None
         self.preview_label.config(image="", text=text, bg="#f2f2f2", width=0, height=0)
+
+    def _on_preview_resize(self, event):
+        """面板尺寸变化（拖动分隔条/缩放窗口）后，按新尺寸重新生成预览图。"""
+        if event.width < 60 or event.height < 60:
+            return
+        if self._pv_size and abs(event.width - self._pv_size[0]) < 24 \
+                and abs(event.height - self._pv_size[1]) < 24:
+            return
+        self._pv_size = (event.width, event.height)
+        if self._preview_file is None \
+                or self._preview_file.ext not in imgprev.PREVIEWABLE_EXTS:
+            return
+        if self._resize_job:
+            try:
+                self.after_cancel(self._resize_job)
+            except tk.TclError:
+                pass
+        self._resize_job = self.after(300, self._refresh_preview)
 
     def _open_with_system(self):
         f = self._preview_file
@@ -573,7 +632,3 @@ class FileCleanerWindow(tk.Toplevel):
             return path
         except OSError:
             return ""
-
-    def _on_close(self):
-        self.cancel_event.set()  # 取消扫描/中止删除批次
-        self.destroy()
