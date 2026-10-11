@@ -246,43 +246,50 @@ class FileCleanerWindow(tk.Toplevel):
         try:
             while True:
                 item = self._q.get_nowait()
-                kind = item[0]
-                if kind == "found":
-                    for f in item[1]:
-                        self.path2file[f.path] = f
-                        self.found.append(f)
-                        self._insert_row(f)
-                    self._update_counts()
-                elif kind == "progress":
-                    _d, found, dirs = item[1], item[2], item[3]
-                    self.status.config(
-                        text=f"正在扫描：{_d}（已找到 {found} 个，已检查 {dirs} 个目录）")
-                elif kind == "done":
-                    stats = item[1]
-                    note = "（结果过多已截断，建议缩小扫描范围）" if stats["truncated"] else ""
-                    self.status.config(
-                        text=f"扫描完成：找到 {stats['found']} 个文件，共 "
-                             f"{winutil.human_size(stats['total_size'])}{note}；"
-                             f"勾选后点击「删除选中项」")
-                    self._finish_scan()
-                elif kind == "cancelled":
-                    self.status.config(text="扫描已取消。")
-                    self._finish_scan()
-                elif kind == "error":
-                    self.status.config(text=f"扫描出错：{item[1]}")
-                    self._finish_scan()
-                elif kind == "deleted":
-                    self._on_deleted(item[1], item[2], item[3])
-                elif kind == "preview":
-                    self._apply_preview(item[1], item[2], item[3])
+                try:
+                    self._handle_item(item)
+                except tk.TclError:
+                    return  # 窗口已销毁，停止泵
+                except Exception:  # noqa: BLE001
+                    import traceback
+                    traceback.print_exc()  # 单条异常不影响后续处理
         except queue.Empty:
             pass
-        except tk.TclError:
-            return
         try:
             self.after(150, self._pump)
         except tk.TclError:
             pass
+
+    def _handle_item(self, item):
+        kind = item[0]
+        if kind == "found":
+            for f in item[1]:
+                self.path2file[f.path] = f
+                self.found.append(f)
+                self._insert_row(f)
+            self._update_counts()
+        elif kind == "progress":
+            _d, found, dirs = item[1], item[2], item[3]
+            self.status.config(
+                text=f"正在扫描：{_d}（已找到 {found} 个，已检查 {dirs} 个目录）")
+        elif kind == "done":
+            stats = item[1]
+            note = "（结果过多已截断，建议缩小扫描范围）" if stats["truncated"] else ""
+            self.status.config(
+                text=f"扫描完成：找到 {stats['found']} 个文件，共 "
+                     f"{winutil.human_size(stats['total_size'])}{note}；"
+                     f"勾选后点击「删除选中项」")
+            self._finish_scan()
+        elif kind == "cancelled":
+            self.status.config(text="扫描已取消。")
+            self._finish_scan()
+        elif kind == "error":
+            self.status.config(text=f"扫描出错：{item[1]}")
+            self._finish_scan()
+        elif kind == "deleted":
+            self._on_deleted(item[1], item[2], item[3])
+        elif kind == "preview":
+            self._apply_preview(item[1], item[2], item[3])
 
     def _finish_scan(self):
         self.scanning = False
@@ -347,7 +354,8 @@ class FileCleanerWindow(tk.Toplevel):
             self._set_preview_text("无法生成预览\n（可双击用系统程序打开）")
             return
         try:
-            self._preview_img = tk.PhotoImage(data=data, format="ppm")
+            # 显式绑定到本窗口的解释器，避免默认根窗口问题
+            self._preview_img = tk.PhotoImage(master=self, data=data, format="ppm")
             self.preview_label.config(image=self._preview_img, text="",
                                       width=0, height=0, bg="#ffffff")
         except tk.TclError:

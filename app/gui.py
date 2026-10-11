@@ -167,10 +167,38 @@ class MainWindow(tk.Tk):
         risks = [a.risk_level for a in self.apps]
         print(f"[smoke] apps={len(self.apps)} risks={ {r: risks.count(r) for r in set(risks)} }")
         try:
+            import tempfile
+            import time as _time
+            from . import filefinder, imgprev
             from .cleaner_window import FileCleanerWindow
             w = FileCleanerWindow(self, show=False)
-            self.update_idletasks()
+            w.withdraw()
             print(f"[smoke] file-cleaner window OK (folders={len(w.folder_vars)})")
+            # 端到端预览测试：插入真实图片行 -> 选中 -> 断言预览控件真的拿到图
+            if imgprev.available():
+                png = os.path.join(tempfile.mkdtemp(prefix="cs_smoke_"), "t.png")
+                if imgprev.selftest_make_png(png, 320, 240):
+                    f = filefinder.FoundFile(png, os.path.getsize(png),
+                                             os.path.getmtime(png), os.path.getctime(png),
+                                             "image", ".png")
+                    w._insert_row(f)
+                    w.tree.selection_set("f0")
+                    w._preview_seq += 1
+                    w._request_preview(w._preview_seq, f)
+                    deadline = _time.time() + 5
+                    while _time.time() < deadline and w._preview_img is None:
+                        try:
+                            w.update()
+                        except tk.TclError:
+                            break
+                        _time.sleep(0.02)
+                    if w._preview_img is not None:
+                        print(f"[smoke] preview image OK "
+                              f"({w._preview_img.width()}x{w._preview_img.height()})")
+                    else:
+                        print("[smoke] preview image FAILED (label never got an image)")
+            else:
+                print("[smoke] GDI+ unavailable, preview test skipped")
             w.destroy()
         except Exception as e:  # noqa: BLE001
             print(f"[smoke] file-cleaner window FAILED: {e}")
