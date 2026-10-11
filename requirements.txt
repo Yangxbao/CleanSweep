@@ -1,0 +1,2 @@
+# 运行时无第三方依赖（仅 Python 标准库，Python 3.8+，Windows）。
+# 打包为 exe 时需要：pip install pyinstaller
