@@ -9,7 +9,7 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app import backup, cleaner, filefinder, leftovers, matcher, scanner, uninstaller, winutil  # noqa: E402
+from app import backup, cleaner, filefinder, imgprev, leftovers, matcher, scanner, uninstaller, winutil  # noqa: E402
 
 failures = 0
 
@@ -156,6 +156,16 @@ try:
     kinds = set()
     filefinder.scan([base], cats, sink=lambda batch: kinds.update(f.category for f in batch))
     expect(kinds == {"image", "document"}, f"类别标记正确（实际 {kinds}）")
+
+    # 图片预览解码（GDI+，零依赖）
+    if imgprev.available():
+        png_path = os.path.join(base, "test.png")
+        expect(imgprev.selftest_make_png(png_path), "GDI+ 生成测试 PNG")
+        data = imgprev.decode_thumbnail(png_path, 64, 64)
+        expect(data is not None and data.startswith(b"P6\n7 5\n255\n"),
+               "缩略图解码为 PPM 7x5")
+    else:
+        print("    (GDI+ 不可用，跳过图片预览测试)")
 finally:
     shutil.rmtree(base, ignore_errors=True)
 

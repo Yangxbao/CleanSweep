@@ -47,6 +47,7 @@ class FoundFile:
     path: str
     size: int
     mtime: float
+    ctime: float      # 创建时间（Windows 上 st_ctime 即创建时间）
     category: str
     ext: str
 
@@ -61,6 +62,10 @@ class FoundFile:
     @property
     def mtime_text(self) -> str:
         return time.strftime("%Y-%m-%d %H:%M", time.localtime(self.mtime))
+
+    @property
+    def ctime_text(self) -> str:
+        return time.strftime("%Y-%m-%d %H:%M", time.localtime(self.ctime))
 
 
 class ScanCancelled(RuntimeError):
@@ -195,7 +200,8 @@ def scan(roots, categories, progress=None, cancel_check=None,
                     continue
                 found += 1
                 total_size += st.st_size
-                batch.append(FoundFile(full, st.st_size, st.st_mtime, cat, ext))
+                batch.append(FoundFile(full, st.st_size, st.st_mtime,
+                                       st.st_ctime, cat, ext))
                 if len(batch) >= sink_batch:
                     flush()
                 if found >= max_results:

@@ -5,6 +5,11 @@
 - 扫描结果默认**一项都不勾选**，由用户勾选后才可删除；
 - 删除默认进回收站（可还原），"永久删除"需要额外一次确认；
 - 删除动作在工作线程执行，逐块回收站删除，失败逐个重试，全部记录到报告。
+
+交互设计：
+- 单击选中行 -> 右侧立即显示图片预览（GDI+ 解码，零依赖）；
+- 双击行 -> 用系统默认程序打开该文件（看大图 / Office 文档）；
+- 点击列标题可按 类别 / 大小 / 修改时间 / 创建时间 / 路径 排序。
 """
 from __future__ import annotations
 
@@ -15,11 +20,12 @@ import time
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
-from . import filefinder, reporter, winutil
-from .gui import FONT, FONT_BOLD, FONT_MONO, _raise_window
+from . import filefinder, imgprev, reporter, winutil
+from .gui import FONT, FONT_BOLD, _raise_window
 
 MAX_RESULTS = 10000   # 扫描结果上限（与列表显示上限一致）
 DELETE_CHUNK = 200    # 回收站批量删除的块大小
+PREVIEW_W, PREVIEW_H = 360, 280
 
 
 def _chunks(seq, size):
@@ -31,7 +37,7 @@ class FileCleanerWindow(tk.Toplevel):
     def __init__(self, master, show: bool = True):
         super().__init__(master)
         self.title("资料清理（图片 / 文档 / PDF / 音视频 / 压缩包）")
-        self.geometry("1120x720")
+        self.geometry("1420x780")
         self.option_add("*Font", FONT)
 
         self.found: list = []                 # 全部扫描结果（FoundFile）
@@ -45,6 +51,10 @@ class FileCleanerWindow(tk.Toplevel):
         self._n = 0
         self._sort_col = "mtime"
         self._sort_desc = True
+        self._preview_seq = 0
+        self._preview_img = None              # 持有引用防止被 GC
+        self._preview_file = None
+        self._debounce_job = None
 
         self._build_ui()
         self._load_default_folders()
@@ -57,7 +67,7 @@ class FileCleanerWindow(tk.Toplevel):
     # ------------------------------------------------------------- UI 构建
 
     def _build_ui(self):
-        # 类别选择
+        # 1) 类别选择
         top = ttk.LabelFrame(self, text="1. 选择要查找的文件类别", padding=(8, 4))
         top.pack(fill="x", padx=8, pady=(8, 4))
         self.cat_vars: dict = {}
@@ -66,7 +76,7 @@ class FileCleanerWindow(tk.Toplevel):
             self.cat_vars[cat] = var
             ttk.Checkbutton(top, text=text, variable=var).pack(side="left", padx=(0, 12))
 
-        # 扫描范围
+        # 2) 扫描范围
         mid = ttk.LabelFrame(self, text="2. 选择扫描范围（默认用户常用目录）", padding=(8, 4))
         mid.pack(fill="x", padx=8, pady=4)
         self.folder_frame = ttk.Frame(mid)
@@ -79,7 +89,7 @@ class FileCleanerWindow(tk.Toplevel):
         ttk.Checkbutton(opts, text="包含系统与程序目录（很慢，不推荐）",
                         variable=self.include_sys_var).pack(anchor="e")
 
-        # 扫描控制
+        # 3) 扫描控制
         ctrl = ttk.Frame(self, padding=(8, 2))
         ctrl.pack(fill="x")
         self.btn_scan = ttk.Button(ctrl, text="开始扫描", command=self.start_scan)
@@ -93,19 +103,23 @@ class FileCleanerWindow(tk.Toplevel):
                                 anchor="w")
         self.status.pack(side="left", padx=(0, 8))
 
-        # 结果列表
-        treef = ttk.Frame(self, padding=(8, 2))
-        treef.pack(fill="both", expand=True)
-        cols = ("sel", "kind", "size", "mtime", "path")
+        # 4) 结果区（左：列表，右：预览）
+        main = ttk.Frame(self, padding=(8, 2))
+        main.pack(fill="both", expand=True)
+
+        treef = ttk.Frame(main)
+        treef.pack(side="left", fill="both", expand=True)
+        cols = ("sel", "kind", "size", "mtime", "ctime", "path")
         self.tree = ttk.Treeview(treef, columns=cols, show="headings")
         for col, text, w, a in (("sel", "删除", 46, "center"),
                                 ("kind", "类别", 60, "center"),
                                 ("size", "大小", 90, "e"),
-                                ("mtime", "修改时间", 130, "center"),
-                                ("path", "文件路径", 620, "w")):
-            self.tree.heading(col, text=text)
-            self.tree.column(col, width=w, anchor=a,
-                             stretch=(col == "path"))
+                                ("mtime", "修改时间", 125, "center"),
+                                ("ctime", "创建时间", 125, "center"),
+                                ("path", "文件路径", 520, "w")):
+            self.tree.heading(col, text=text,
+                              command=(lambda c=col: self._sort_by(c)) if col != "sel" else "")
+            self.tree.column(col, width=w, anchor=a, stretch=(col == "path"))
         vsb = ttk.Scrollbar(treef, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=vsb.set)
         self.tree.pack(side="left", fill="both", expand=True)
@@ -113,8 +127,32 @@ class FileCleanerWindow(tk.Toplevel):
         self.tree.bind("<Button-1>", self._on_click)
         self.tree.bind("<Double-1>", self._on_double)
         self.tree.bind("<space>", self._on_space)
+        self.tree.bind("<<TreeviewSelect>>", self._on_select_row)
+        ttk.Label(treef, foreground="#888888",
+                  text="单击选中行可在右侧预览图片；双击用系统程序打开；点击列标题排序"
+                       "（再次点击切换升/降序）").pack(anchor="w", pady=(3, 0))
 
-        # 底部操作
+        preview = ttk.LabelFrame(main, text="预览", padding=6)
+        preview.pack(side="left", fill="y", padx=(8, 0))
+        preview.configure(width=PREVIEW_W + 28)
+        preview.pack_propagate(False)
+        self.preview_label = tk.Label(
+            preview, text="单击列表中的图片行\n在此预览", bg="#f2f2f2", fg="#777777",
+            justify="center", anchor="center", relief="sunken", bd=1)
+        self.preview_label.pack(fill="x")
+        self.preview_name = tk.Label(preview, text="", wraplength=PREVIEW_W - 8,
+                                     justify="left", font=FONT_BOLD, anchor="w")
+        self.preview_name.pack(fill="x", pady=(6, 0))
+        self.preview_info = tk.Label(preview, text="", wraplength=PREVIEW_W - 8,
+                                     justify="left", fg="#555555", anchor="w")
+        self.preview_info.pack(fill="x")
+        pbtns = ttk.Frame(preview)
+        pbtns.pack(fill="x", pady=(6, 0))
+        ttk.Button(pbtns, text="用系统程序打开", command=self._open_with_system).pack(
+            side="left", padx=(0, 4))
+        ttk.Button(pbtns, text="打开所在位置", command=self._open_location).pack(side="left")
+
+        # 5) 底部操作
         bottom = ttk.Frame(self, padding=8)
         bottom.pack(fill="x")
         ttk.Button(bottom, text="全选", command=lambda: self._set_all(True)).pack(side="left")
@@ -179,7 +217,6 @@ class FileCleanerWindow(tk.Toplevel):
         self.btn_delete.config(state="disabled")
         self.progress.start(12)
         self.status.config(text="正在扫描…")
-        include_sys = self.include_sys_var.get()
 
         def work():
             try:
@@ -187,7 +224,7 @@ class FileCleanerWindow(tk.Toplevel):
                     roots, cats,
                     progress=lambda d, f, s: self._q.put(("progress", d, f, s)),
                     cancel_check=self.cancel_event.is_set,
-                    include_system_dirs=include_sys,
+                    include_system_dirs=self.include_sys_var.get(),
                     max_results=MAX_RESULTS,
                     sink=lambda batch: self._q.put(("found", batch)))
                 self._q.put(("done", stats))
@@ -205,7 +242,7 @@ class FileCleanerWindow(tk.Toplevel):
     # ------------------------------------------------------------- 结果泵
 
     def _pump(self):
-        """主线程定时任务：处理扫描/删除的结果队列（批量刷新，不阻塞）。"""
+        """主线程定时任务：处理扫描/删除/预览的结果队列（批量刷新，不阻塞）。"""
         try:
             while True:
                 item = self._q.get_nowait()
@@ -235,7 +272,9 @@ class FileCleanerWindow(tk.Toplevel):
                     self.status.config(text=f"扫描出错：{item[1]}")
                     self._finish_scan()
                 elif kind == "deleted":
-                    self._on_deleted(item[1], item[2])
+                    self._on_deleted(item[1], item[2], item[3])
+                elif kind == "preview":
+                    self._apply_preview(item[1], item[2], item[3])
         except queue.Empty:
             pass
         except tk.TclError:
@@ -252,6 +291,82 @@ class FileCleanerWindow(tk.Toplevel):
         self.btn_cancel_scan.config(state="disabled")
         self._update_counts()
 
+    # ------------------------------------------------------------- 预览
+
+    def _on_select_row(self, _event=None):
+        sel = self.tree.selection()
+        f = self.iid2file.get(sel[0]) if sel else None
+        self._preview_file = f
+        self._preview_seq += 1
+        seq = self._preview_seq
+        if self._debounce_job:
+            try:
+                self.after_cancel(self._debounce_job)
+            except tk.TclError:
+                pass
+        self._debounce_job = self.after(120, lambda: self._request_preview(seq, f))
+
+    def _request_preview(self, seq, f):
+        if seq != self._preview_seq:
+            return
+        if f is None:
+            self._set_preview_text("单击列表中的图片行\n在此预览")
+            self.preview_name.config(text="")
+            self.preview_info.config(text="")
+            return
+        self.preview_name.config(text=os.path.basename(f.path))
+        self.preview_info.config(
+            text=f"类别：{f.category_text}　大小：{f.size_text}\n"
+                 f"修改：{f.mtime_text}　创建：{f.ctime_text}")
+        if f.ext not in imgprev.PREVIEWABLE_EXTS:
+            self._set_preview_text("该类别不支持预览\n（仅图片文件）")
+            return
+        if not imgprev.available():
+            self._set_preview_text("预览功能不可用")
+            return
+        self._set_preview_text("正在生成预览…")
+        threading.Thread(target=self._preview_worker, args=(seq, f.path),
+                         daemon=True).start()
+
+    def _preview_worker(self, seq, path):
+        try:
+            data = imgprev.decode_thumbnail(path, PREVIEW_W, PREVIEW_H)
+        except Exception:  # noqa: BLE001
+            data = None
+        try:
+            self._q.put(("preview", seq, path, data))
+        except tk.TclError:
+            pass
+
+    def _apply_preview(self, seq, path, data):
+        if seq != self._preview_seq:
+            return  # 已有更新的选择
+        if not self._preview_file or self._preview_file.path != path:
+            return  # 当前选中的已不是这张图
+        if not data:
+            self._set_preview_text("无法生成预览\n（可双击用系统程序打开）")
+            return
+        try:
+            self._preview_img = tk.PhotoImage(data=data, format="ppm")
+            self.preview_label.config(image=self._preview_img, text="",
+                                      width=0, height=0, bg="#ffffff")
+        except tk.TclError:
+            self._set_preview_text("预览显示失败\n（可双击用系统程序打开）")
+
+    def _set_preview_text(self, text):
+        self._preview_img = None
+        self.preview_label.config(image="", text=text, bg="#f2f2f2", width=0, height=0)
+
+    def _open_with_system(self):
+        f = self._preview_file
+        if not f:
+            messagebox.showinfo("提示", "请先在列表中选择一个文件。", parent=self)
+            return
+        try:
+            os.startfile(f.path)
+        except OSError as e:
+            messagebox.showerror("打开失败", f"无法打开：\n{f.path}\n\n{e}", parent=self)
+
     # ------------------------------------------------------------- 列表
 
     def _insert_row(self, f):
@@ -262,7 +377,7 @@ class FileCleanerWindow(tk.Toplevel):
         self.iid2file[iid] = f
         self.tree.insert("", "end", iid=iid, values=(
             "☑" if f.path in self.checked_paths else "☐", f.category_text,
-            f.size_text, f.mtime_text, f.path))
+            f.size_text, f.mtime_text, f.ctime_text, f.path))
 
     def _rebuild_tree(self, items):
         self.tree.delete(*self.tree.get_children())
@@ -273,21 +388,19 @@ class FileCleanerWindow(tk.Toplevel):
         self._update_counts()
 
     def _sort_by(self, col):
-        if col == "sel":
-            return
         if self._sort_col == col:
             self._sort_desc = not self._sort_desc
         else:
             self._sort_col = col
-            self._sort_desc = col in ("size", "mtime")
+            self._sort_desc = col in ("size", "mtime", "ctime")  # 数值/时间列默认降序
         keys = {
             "kind": lambda f: f.category_text,
             "size": lambda f: f.size,
             "mtime": lambda f: f.mtime,
+            "ctime": lambda f: f.ctime,
             "path": lambda f: f.path.lower(),
         }
-        self._rebuild_tree(sorted(self.found, key=keys[col],
-                                  reverse=self._sort_desc))
+        self._rebuild_tree(sorted(self.found, key=keys[col], reverse=self._sort_desc))
 
     def _toggle(self, iid):
         f = self.iid2file.get(iid)
@@ -305,13 +418,17 @@ class FileCleanerWindow(tk.Toplevel):
         if self.tree.identify("region", event.x, event.y) != "cell":
             return
         if self.tree.identify_column(event.x) == "#1":
-            self._toggle(self.tree.identify_row(event.x))
+            self._toggle(self.tree.identify_row(event.y))
 
     def _on_double(self, event):
-        iid = self.tree.identify_row(event.x)
+        iid = self.tree.identify_row(event.y)
         f = self.iid2file.get(iid)
         if f:
-            winutil.open_in_explorer(f.path)
+            try:
+                os.startfile(f.path)  # 用系统默认程序打开（看图/Office…）
+            except OSError as e:
+                messagebox.showerror("打开失败", f"无法打开：\n{f.path}\n\n{e}",
+                                     parent=self)
         return "break"
 
     def _on_space(self, _event):
@@ -329,6 +446,10 @@ class FileCleanerWindow(tk.Toplevel):
         self._update_counts()
 
     def _open_location(self):
+        f = self._preview_file
+        if f:
+            winutil.open_in_explorer(f.path)
+            return
         sel = self.tree.selection()
         f = self.iid2file.get(sel[0]) if sel else None
         if f:
@@ -356,7 +477,7 @@ class FileCleanerWindow(tk.Toplevel):
         mode_text = "移动到回收站（可还原）" if mode == "recycle" else "永久删除（不可恢复！）"
         msg = (f"确认删除 {len(files)} 个文件，共约 {winutil.human_size(total)}？\n\n"
                f"删除模式：{mode_text}\n\n"
-               "建议先逐项核对路径（可双击行打开所在位置）。")
+               "建议先逐项核对路径（可双击行打开文件、点「打开所在位置」看目录）。")
         if not messagebox.askyesno("删除确认", msg, icon="warning", parent=self):
             return
         if mode == "permanent" and not messagebox.askyesno(

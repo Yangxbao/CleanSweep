@@ -40,7 +40,7 @@ Click **"资料清理" (file cleaner)** in the main window to open a separate wi
 
 1. **Pick categories**: images (jpg/png/heic…), documents (doc/docx/ppt/pptx/xls/xlsx/wps…), PDF, text, audio/video, archives — any combination;
 2. **Pick scope**: default user folders (Desktop/Documents/Downloads/Pictures/Videos, redirect-aware), plus any custom folder; system & program directories are skipped by default (fast, low noise). Scanning is read-only and cancellable at any time;
-3. **Review item by item**: results show category/size/modification time/path, sortable, double-click to open the containing folder; **nothing is checked by default** — deletion requires explicit checks;
+3. **Review item by item**: results show category/size/modification time/**creation time**/path; click a column header to sort (click again to flip, time/size default to descending); **single-click an image row to preview it instantly in the right-side panel** (decoded via GDI+, no third-party libs); **double-click a row to open it with the default system program** (photo viewer / Office), plus an "open containing folder" button; **nothing is checked by default** — deletion requires explicit checks;
 4. **Delete**: Recycle Bin by default (restorable); permanent deletion asks for an extra confirmation; deletion runs in a worker thread and produces a Markdown report.
 
 > This feature deletes your own documents and photos — always verify paths before checking an item; when in doubt, keep the file.

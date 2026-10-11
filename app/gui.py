@@ -579,10 +579,10 @@ def ask_leftovers_dialog(master, fs_items, reg_items, backup_dir):
         if region != "cell":
             return
         if tree.identify_column(event.x) == "#1":  # “删除”列
-            toggle(tree.identify_row(event.x))
+            toggle(tree.identify_row(event.y))
 
     def on_double(event):
-        toggle(tree.identify_row(event.x) or "")
+        toggle(tree.identify_row(event.y) or "")
 
     def on_space(_event):
         for iid in tree.selection():
