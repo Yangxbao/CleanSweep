@@ -40,10 +40,12 @@ Click **"资料清理" (file cleaner)** in the main window to open a separate wi
 
 1. **Pick categories**: images (jpg/png/heic…), documents (doc/docx/ppt/pptx/xls/xlsx/wps…), PDF, text, audio/video, archives — any combination;
 2. **Pick scope**: default user folders (Desktop/Documents/Downloads/Pictures/Videos, redirect-aware), plus any custom folder; system & program directories are skipped by default (fast, low noise). Scanning is read-only and cancellable at any time;
-3. **Review item by item**: results show category/size/modification time/**creation time**/path; click a column header to sort (click again to flip, time/size default to descending); **single-click an image row to preview it instantly in the right-side panel** (decoded via GDI+, no third-party libs); **double-click a row to open it with the default system program** (photo viewer / Office), plus an "open containing folder" button; **nothing is checked by default** — deletion requires explicit checks;
+3. **Review item by item**: results show category/size/modification time/**creation time**/path; click a column header to sort (click again to flip, time/size default to descending); **single-click an image row to preview it instantly in the right-side panel** (decoded via GDI+, no third-party libs) — **drag the sash between the list and the preview, or resize the window, and the image is regenerated at the panel's actual size**; **double-click a row to open it with the default system program** (photo viewer / Office), plus an "open containing folder" button; **nothing is checked by default** — deletion requires explicit checks;
 4. **Delete**: Recycle Bin by default (restorable); permanent deletion asks for an extra confirmation; deletion runs in a worker thread and produces a Markdown report.
 
 > This feature deletes your own documents and photos — always verify paths before checking an item; when in doubt, keep the file.
+
+The **"← 返回卸载主界面" (back to uninstaller)** button at the top-left (or simply closing the window) returns you to the main app list at any time.
 
 ## The freeze bug: root cause and fix (v1.0.0 highlight)
 
@@ -161,6 +163,16 @@ Read-only verification (matcher unit tests, safety-check cases, live enumeration
 - Silent uninstall relies on `QuietUninstallString` or the Inno/NSIS families; otherwise the official UI is shown.
 - Recycle-bin deletion may fail for very long paths (>260 chars); failures are recorded in the report.
 - UI text is Chinese-first with some English; no language switcher yet.
+
+## Changelog
+
+| Version | Date | Highlights |
+| --- | --- | --- |
+| [v1.1.1](https://github.com/Yangxbao/CleanSweep/releases/tag/v1.1.1) | 2026-10-11 | File-cleaner UI polish: draggable sash between list and preview (no more blank gap), zoom-adaptive preview regeneration, back-to-main button |
+| [v1.1.0](https://github.com/Yangxbao/CleanSweep/releases/tag/v1.1.0) | 2026-10-11 | New personal file cleaner: category search, image preview, creation-time sorting, safe deletion |
+| [v1.0.0](https://github.com/Yangxbao/CleanSweep/releases/tag/v1.0.0) | 2026-10-11 | First public release: thorough uninstall + residual cleanup + anti-freeze design (60 s timeout / force-kill / protected process list) |
+
+Downloads and full release notes: [Releases](https://github.com/Yangxbao/CleanSweep/releases).
 
 ## License
 
